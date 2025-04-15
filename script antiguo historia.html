@@ -1,0 +1,439 @@
+     // Variables globales
+      let casoSeleccionado = null;
+      let datosUsuario = null;
+      let tablaCasos = null;
+      
+      // Cuando el documento está listo
+      $(document).ready(function() {
+        // Cargar información del usuario
+        cargarInfoUsuario();
+        
+        // Inicializar DataTable
+        tablaCasos = $('#tablaCasos').DataTable({
+          language: {
+            url: '//cdn.datatables.net/plug-ins/1.11.5/i18n/es-ES.json'
+          },
+          responsive: true,
+          paging: true,
+          searching: true,
+          ordering: true,
+          info: true,
+          lengthChange: true,
+          pageLength: 10,
+          dom: 't', // Sólo tabla, eliminamos los controles por defecto
+          columns: [
+            { data: 'Fecha de Registro' },
+            { data: 'Usuario Creador' },
+            { data: 'Carpeta Fiscal' },
+            { data: 'Fiscalía' },
+            { data: 'Unidad de Inteligencia' },
+            { 
+              data: 'ID',
+              render: function(data) {
+                return `
+                  <button class="btn btn-sm btn-azul btn-action ver-detalles" data-id="${data}">
+                    <i class="fas fa-eye"></i>
+                  </button>
+                  <button class="btn btn-sm btn-verde btn-action editar-registro" data-id="${data}">
+                    <i class="fas fa-edit"></i>
+                  </button>
+                  <button class="btn btn-sm btn-rojo btn-action eliminar-registro" data-id="${data}">
+                    <i class="fas fa-trash-alt"></i>
+                  </button>
+                `;
+              }
+            }
+          ]
+        });
+        
+        // Manejar cambio en el número de registros a mostrar
+        $('#lengthSelect').on('change', function() {
+          tablaCasos.page.len($(this).val()).draw();
+        });
+        
+        // Manejar búsqueda
+        $('#searchInput').on('keyup', function() {
+          tablaCasos.search($(this).val()).draw();
+        });
+        
+        // Manejar paginación
+        $('#prevButton').on('click', function(e) {
+          e.preventDefault();
+          if (!$(this).parent().hasClass('disabled')) {
+            tablaCasos.page('previous').draw('page');
+          }
+        });
+        
+        $('#nextButton').on('click', function(e) {
+          e.preventDefault();
+          if (!$(this).parent().hasClass('disabled')) {
+            tablaCasos.page('next').draw('page');
+          }
+        });
+        
+        // Actualizar información de paginación
+        tablaCasos.on('draw', function() {
+          updatePaginationInfo();
+        });
+        
+        // Cargar datos
+        cargarHistorial();
+        // ---------------------------------------------------------------------
+        cargarRegistrosLocales();
+        
+        // Manejar clic en botón de logout
+        $('#btnLogout').click(function() {
+          showLoading();
+          google.script.run
+            .withSuccessHandler(function() {
+              window.top.location.href = '<?= ScriptApp.getService().getUrl(); ?>';
+            })
+            .withFailureHandler(manejarError)
+            .logout();
+        });
+        
+        // Manejar exportación a Excel
+        $('#btnExportExcel').click(function() {
+          showLoading();
+          google.script.run
+            .withSuccessHandler(procesarExportacionExcel)
+            .withFailureHandler(manejarError)
+            .exportToExcel();
+        });
+        
+        // Manejar exportación a PDF
+        $('#btnExportPDF').click(function() {
+          showLoading();
+          google.script.run
+            .withSuccessHandler(procesarExportacionPDF)
+            .withFailureHandler(manejarError)
+            .exportToPDF();
+        });
+        
+        // Manejar clic en botón de editar
+        $(document).on('click', '.editar-registro', function() {
+          const id = $(this).data('id');
+          window.location.href = `<?= ScriptApp.getService().getUrl(); ?>?action=formulario&id=${id}`;
+        });
+        
+        // Manejar clic en botón de eliminar
+        $(document).on('click', '.eliminar-registro', function() {
+          const id = $(this).data('id');
+          if (confirm('¿Está seguro que desea eliminar este registro?')) {
+            showLoading();
+            google.script.run
+              .withSuccessHandler(function(result) {
+                hideLoading();
+                if (result.success) {
+                  alert('Registro eliminado correctamente');
+                  cargarHistorial();
+                } else {
+                  alert('Error al eliminar el registro: ' + result.message);
+                }
+              })
+              .withFailureHandler(manejarError)
+              .deleteCaso(id);
+          }
+        });
+        
+        // Manejar clic en botón de ver detalles
+        $(document).on('click', '.ver-detalles', function() {
+          const id = $(this).data('id');
+          window.location.href = `<?= ScriptApp.getService().getUrl(); ?>?action=detalles&id=${id}`;
+        });
+      });
+      
+      // Función para actualizar información de paginación
+      function updatePaginationInfo() {
+        const info = tablaCasos.page.info();
+        
+        // Actualizar texto de información
+        if (info.recordsTotal > 0) {
+          $('#recordsInfo').text(`Mostrando registros del ${info.start + 1} al ${info.end} de un total de ${info.recordsTotal} registros`);
+        } else {
+          $('#recordsInfo').text('Mostrando registros del 0 al 0 de un total de 0 registros');
+        }
+        
+        // Actualizar estado de botones de paginación
+        $('#prevButton').parent().toggleClass('disabled', !tablaCasos.page.info().page);
+        $('#nextButton').parent().toggleClass('disabled', tablaCasos.page.info().page >= tablaCasos.page.info().pages - 1);
+      }
+      
+      // Función para mostrar el indicador de carga
+      function showLoading() {
+        $('#loadingIndicator').show();
+      }
+      
+      // Función para ocultar el indicador de carga
+      function hideLoading() {
+        $('#loadingIndicator').hide();
+      }
+      
+      // Función para cargar información del usuario
+      function cargarInfoUsuario() {
+        google.script.run
+          .withSuccessHandler(function(userData) {
+            if (userData) {
+              datosUsuario = userData;
+              $('#username').text(userData.username);
+            } else {
+              // Si no hay datos de usuario, redirigir al login
+              window.top.location.href = '<?= ScriptApp.getService().getUrl(); ?>';
+            }
+          })
+          .withFailureHandler(function(error) {
+            console.error(error);
+            window.top.location.href = '<?= ScriptApp.getService().getUrl(); ?>';
+          })
+          .getUserSession();
+      }
+      
+      // Función para cargar el historial de registros
+      function cargarHistorial() {
+        showLoading();
+        google.script.run
+          .withSuccessHandler(procesarCasos)
+          .withFailureHandler(manejarError)
+          .getCasos();
+      }
+      
+      // Función para procesar los datos de casos
+      function procesarCasos(datos) {
+        // Limpiar tabla
+        tablaCasos.clear();
+        
+        console.log("Datos recibidos:", datos);
+        
+        // Añadir datos a la tabla
+        if (datos && datos.length > 0) {
+          tablaCasos.rows.add(datos).draw();
+        } else {
+          tablaCasos.draw();
+        }
+        
+        hideLoading();
+      }
+      
+      // Función para procesar la exportación a Excel
+      function procesarExportacionExcel(resultado) {
+        hideLoading();
+        
+        if (resultado.success) {
+          // Crear un enlace temporal para la descarga
+          const a = document.createElement('a');
+          a.href = 'data:' + resultado.mimeType + ';base64,' + resultado.data;
+          a.download = resultado.fileName;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        } else {
+          alert('Error al exportar a Excel: ' + resultado.message);
+        }
+      }
+      
+      // Función para procesar la exportación a PDF
+      function procesarExportacionPDF(resultado) {
+        hideLoading();
+        
+        if (resultado.success) {
+          // Crear un enlace temporal para la descarga
+          const a = document.createElement('a');
+          a.href = 'data:' + resultado.mimeType + ';base64,' + resultado.data;
+          a.download = resultado.fileName;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        } else {
+          alert('Error al exportar a PDF: ' + resultado.message);
+        }
+      }
+      
+      // Función para manejar errores
+      function manejarError(error) {
+        hideLoading();
+        console.error(error);
+        
+        if (error && error.message && error.message.includes('Authorization')) {
+          // Error de autorización, volver al login
+          alert('Su sesión ha expirado. Por favor, inicie sesión de nuevo.');
+          window.top.location.href = '<?= ScriptApp.getService().getUrl(); ?>';
+        } else {
+          alert('Error: ' + (error.message || error));
+        }
+      }
+      //------------------------------------------------------------------------
+      // Añade estas funciones a tu archivo historial.html, justo después de la función cargarHistorial()
+
+      // Función para cargar y mostrar los registros del localStorage
+      function cargarRegistrosLocales() {
+        try {
+          // Recuperar registros guardados en localStorage
+          const storedData = localStorage.getItem('fecor_registros');
+          if (!storedData) {
+            console.log("No hay registros locales guardados");
+            return;
+          }
+          
+          const localRecords = JSON.parse(storedData);
+          console.log("Registros recuperados de localStorage:", localRecords);
+          
+          // Mostrar los registros en la interfaz
+          mostrarRegistrosLocales(localRecords);
+        } catch (error) {
+          console.error("Error al cargar registros de localStorage:", error);
+        }
+      }
+
+      // Función para mostrar los registros locales en la interfaz
+      function mostrarRegistrosLocales(records) {
+        // Crear contenedor para los registros locales si no existe
+        if ($('#localRecordsSection').length === 0) {
+          const localSection = `
+            <div id="localRecordsSection" class="mt-4">
+              <div class="d-flex justify-content-between align-items-center mb-3">
+                <h3>Registros Locales</h3>
+                <button id="btnLimpiarLocal" class="btn btn-outline-danger btn-sm">
+                  <i class="fas fa-trash-alt me-1"></i> Limpiar Registros Locales
+                </button>
+              </div>
+              <div class="table-responsive">
+                <table class="table table-striped" id="tablaRegistrosLocales">
+                  <thead>
+                    <tr>
+                      <th>Fecha de Registro</th>
+                      <th>Usuario Creador</th>
+                      <th>Carpeta Fiscal</th>
+                      <th>Fiscalía</th>
+                      <th>Unidad de Inteligencia</th>
+                      <th>Acciones</th>
+                    </tr>
+                  </thead>
+                  <tbody id="localRecordsBody">
+                    <!-- Aquí se cargarán los registros locales -->
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          `;
+          
+          // Insertarlo después de la tabla principal
+          $('#tablaCasos_wrapper').after(localSection);
+          
+          // Manejar clic en botón de limpiar registros locales
+          $('#btnLimpiarLocal').on('click', function() {
+            if (confirm('¿Está seguro que desea eliminar todos los registros guardados localmente?')) {
+              localStorage.removeItem('fecor_registros');
+              $('#localRecordsSection').remove();
+            }
+          });
+        }
+        
+        // Limpiar contenido existente
+        $('#localRecordsBody').empty();
+        
+        // Mostrar mensaje si no hay registros
+        if (!records || records.length === 0) {
+          $('#localRecordsBody').html('<tr><td colspan="6" class="text-center">No hay registros locales guardados</td></tr>');
+          return;
+        }
+        
+        // Ordenar registros por timestamp (más recientes primero)
+        records.sort((a, b) => {
+          const timeA = a.timestamp || 0;
+          const timeB = b.timestamp || 0;
+          return timeB - timeA;
+        });
+        
+        // Añadir filas a la tabla
+        records.forEach(record => {
+          const row = `
+            <tr>
+              <td>${record['Fecha de Registro'] || ''}</td>
+              <td>${record['Usuario Creador'] || ''}</td>
+              <td>${record['Carpeta Fiscal'] || ''}</td>
+              <td>${record['Fiscalía'] || ''}</td>
+              <td>${record['Unidad de Inteligencia'] || ''}</td>
+              <td>
+                <button class="btn btn-sm btn-azul btn-action ver-detalles-local" data-record='${JSON.stringify(record).replace(/'/g, "&#39;")}'>
+                  <i class="fas fa-eye"></i>
+                </button>
+              </td>
+            </tr>
+          `;
+          $('#localRecordsBody').append(row);
+        });
+        
+        // Manejar clic en ver detalles
+        $('.ver-detalles-local').on('click', function() {
+          const recordData = JSON.parse($(this).data('record'));
+          mostrarDetallesRegistroLocal(recordData);
+        });
+      }
+
+      // Función para mostrar detalles de un registro local
+      function mostrarDetallesRegistroLocal(record) {
+        // Crear modal para mostrar detalles
+        const modalId = 'modalDetallesLocal';
+        
+        // Contenido del modal
+        let modalContent = `
+          <div class="modal fade" id="${modalId}" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-lg modal-dialog-scrollable">
+              <div class="modal-content">
+                <div class="modal-header">
+                  <h5 class="modal-title">Detalles del Registro Local</h5>
+                  <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                  <div class="container-fluid">
+        `;
+        
+        // Añadir campos con sus valores
+        for (const key in record) {
+          // Excluir campos técnicos y vacíos
+          if (key !== 'timestamp' && key !== 'ID' && record[key]) {
+            let valor = record[key];
+            
+            // Si el valor tiene múltiples líneas, formatear como lista
+            if (valor.includes('\n')) {
+              const items = valor.split('\n').filter(item => item.trim());
+              if (items.length > 0) {
+                valor = '<ul class="mb-0 ps-3">' + 
+                  items.map(item => `<li>${item}</li>`).join('') + 
+                  '</ul>';
+              }
+            }
+            
+            modalContent += `
+              <div class="row mb-2">
+                <div class="col-md-4 fw-bold">${key}:</div>
+                <div class="col-md-8">${valor}</div>
+              </div>
+            `;
+          }
+        }
+        
+        // Cerrar modal
+        modalContent += `
+                  </div>
+                </div>
+                <div class="modal-footer">
+                  <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+        
+        // Añadir modal al DOM si no existe
+        if ($(`#${modalId}`).length === 0) {
+          $('body').append(modalContent);
+        } else {
+          $(`#${modalId}`).replaceWith(modalContent);
+        }
+        
+        // Mostrar modal
+        const modalElement = document.getElementById(modalId);
+        const modal = new bootstrap.Modal(modalElement);
+        modal.show();
+      }  
